@@ -178,12 +178,135 @@ docker-compose down -v
 docker-compose down --rmi all
 ```
 
+## Kafka 테스트 데이터 생성
+
+### 토픽 생성 (JMX 에이전트 포트 충돌 방지)
+```bash
+# 테스트 토픽 생성
+docker run --rm --network 7___default confluentinc/cp-kafka:7.4.0 kafka-topics --create --topic test-topic --partitions 3 --replication-factor 1 --bootstrap-server kafka:29092
+
+# 메트릭 토픽 생성
+docker run --rm --network 7___default confluentinc/cp-kafka:7.4.0 kafka-topics --create --topic metrics-topic --partitions 2 --replication-factor 1 --bootstrap-server kafka:29092
+
+# 토픽 목록 확인
+docker run --rm --network 7___default confluentinc/cp-kafka:7.4.0 kafka-topics --list --bootstrap-server kafka:29092
+```
+
+### 테스트 메시지 생성
+```bash
+# 배치로 메시지 생성
+for i in {1..10}; do echo "Test message $i $(date)" | docker run --rm -i --network 7___default confluentinc/cp-kafka:7.4.0 kafka-console-producer --topic test-topic --bootstrap-server kafka:29092; done
+
+# 추가 메시지 생성 (metrics-topic용)
+for i in {1..5}; do echo "Metrics data $i $(date)" | docker run --rm -i --network 7___default confluentinc/cp-kafka:7.4.0 kafka-console-producer --topic metrics-topic --bootstrap-server kafka:29092; done
+```
+
+### Consumer Group 생성 (Lag 메트릭용)
+```bash
+# 백그라운드에서 Consumer Group 시작
+docker run --rm -d --name test-consumer --network 7___default confluentinc/cp-kafka:7.4.0 kafka-console-consumer --topic test-topic --group test-consumer-group --bootstrap-server kafka:29092
+
+# Consumer 상태 확인
+docker ps | grep test-consumer
+```
+
+### 처리율 데이터 생성
+```bash
+# 초당 처리율 데이터를 위한 연속 메시지 생성
+for i in {1..20}; do echo "Message batch 1 - $i $(date)" | docker run --rm -i --network 7___default confluentinc/cp-kafka:7.4.0 kafka-console-producer --topic test-topic --bootstrap-server kafka:29092; sleep 0.1; done
+
+# 병렬로 빠른 메시지 생성 (lag 생성용)
+for i in {1..30}; do echo "Fast message batch - $i $(date)" | docker run --rm -i --network 7___default confluentinc/cp-kafka:7.4.0 kafka-console-producer --topic test-topic --bootstrap-server kafka:29092 & done; wait
+```
+
+## Grafana 메트릭 쿼리
+
+### 메시지 처리율 메트릭
+
+#### 1. Message in per second (초당 메시지 수)
+```
+sum(rate(kafka_topic_partition_current_offset[1m])) by (topic)
+```
+
+#### 2. Message in per minute (분당 메시지 수)
+```
+sum(rate(kafka_topic_partition_current_offset[1m]) * 60) by (topic)
+```
+
+#### 3. Message consume per minute (분당 소비된 메시지 수)
+```
+sum(rate(kafka_consumergroup_current_offset_sum[1m]) * 60) by (consumergroup, topic)
+```
+
+### Consumer Group 메트릭
+
+#### 4. Lag by Consumer Group (Consumer Group별 지연)
+```
+kafka_consumergroup_lag_sum
+```
+
+특정 토픽만:
+```
+kafka_consumergroup_lag_sum{topic="test-topic"}
+```
+
+#### 5. Partitions per Topic (토픽별 파티션 수)
+```
+kafka_topic_partitions
+```
+
+내부 토픽 제외:
+```
+kafka_topic_partitions{topic!~"__.*"}
+```
+
+### 추가 유용한 쿼리들
+
+#### 파티션별 처리율
+```
+rate(kafka_topic_partition_current_offset[1m])
+```
+
+#### Consumer Group 멤버 수
+```
+kafka_consumergroup_members
+```
+
+#### 토픽별 총 파티션 수
+```
+count by (topic) (kafka_topic_partition_replicas)
+```
+
+#### 브로커별 파티션 리더 수
+```
+count by (instance) (kafka_topic_partition_leader)
+```
+
+## 메트릭 확인 방법
+
+### Prometheus 메트릭 직접 확인
+```bash
+# Kafka Exporter 메트릭 확인
+curl http://localhost:9308/metrics
+
+# 토픽 관련 메트릭만 확인
+curl -s http://localhost:9308/metrics | grep kafka_topic
+
+# Consumer 관련 메트릭만 확인
+curl -s http://localhost:9308/metrics | grep kafka_consumer
+```
+
+### Prometheus UI에서 확인
+- http://localhost:9090 접속
+- Graph 탭에서 위의 쿼리들을 입력하여 테스트
+
 ## 참고 자료
 
 - [Apache Kafka 공식 문서](https://kafka.apache.org/documentation/)
 - [Prometheus 공식 문서](https://prometheus.io/docs/)
 - [Grafana 공식 문서](https://grafana.com/docs/)
 - [Docker Compose 문서](https://docs.docker.com/compose/)
+- [Kafka Exporter GitHub](https://github.com/danielqsj/kafka_exporter)
 
 ## 문의사항
 
